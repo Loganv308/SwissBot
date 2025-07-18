@@ -4,5 +4,10 @@
   },
   "devDependencies": {
     "eslint": "^9.16.0"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "deploy-command": "node deploy-commands.js"
+    
   }
 }
