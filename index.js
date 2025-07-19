@@ -1,16 +1,22 @@
 // Require the necessary discord.js classes
 const fs = require('node:fs');
 const path = require('node:path');
-const { Client, Collection, Events, GatewayIntentBits } = require('discord.js');
+const { Client, Collection, Events, GatewayIntentBits, TeamMemberMembershipState } = require('discord.js');
 const { token } = require('./config.json');
 
 // Create a new client instance
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const client = new Client({ 
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMembers // This part is needed for adding to role
+    ] });
 
 client.commands = new Collection();
 
 const foldersPath = path.join(__dirname, 'commands');
 const commandFolders = fs.readdirSync(foldersPath, { withFileTypes: true });
+
+const AUTO_ROLE_ID = '1395859692269604864';
 
 for (const dirent of commandFolders) {
     if (dirent.isDirectory()) {
@@ -37,13 +43,27 @@ for (const dirent of commandFolders) {
     }
 }
 
-// When the client is ready, run this code (only once).
-// The distinction between `client: Client<boolean>` and `readyClient: Client<true>` is important for TypeScript developers.
-// It makes some properties non-nullable.
+// When the client is ready, it will run this code (only once).
 client.once(Events.ClientReady, readyClient => {
 	console.log(`Ready! Logged in as ${readyClient.user.tag}`);
+
+    client.commands.forEach((command, name) => {
+        const commandName = command.data?.name || command.data?.toJSON().name;
+        console.log('Command name:', commandName);
+    })
 });
 
+// Using the 'guildMemberAdd' property (when a user joins the server)
+client.on('guildMemberAdd', async member => {
+    try {
+        await member.roles.add(AUTO_ROLE_ID);
+        console.log(`Auto role added to ${member.user.tag}`);
+    } catch (error) {
+        console.log('Failed to add role: ', error);
+    }
+});
+
+// Checks if there was a command given 
 client.on(Events.InteractionCreate, async interaction => {
 	if (!interaction.isChatInputCommand()) return;
 	
