@@ -1,22 +1,22 @@
 // Require the necessary discord.js classes
 const fs = require('node:fs');
 const path = require('node:path');
-const { Client, Collection, Events, GatewayIntentBits, TeamMemberMembershipState } = require('discord.js');
-const { token } = require('./config.json');
+const { Client, Events, GatewayIntentBits, TeamMemberMembershipState } = require('discord.js');
+const { token, autoRoleId } = require('./config.json');
+const autoroleCommand = require('./commands/management/autorole.js');
 
 // Create a new client instance
 const client = new Client({ 
     intents: [
         GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMembers // This part is needed for adding to role
+        GatewayIntentBits.GuildMembers, // This part is needed for adding to role
+        GatewayIntentBits.GuildMessages
     ] });
 
-client.commands = new Collection();
+client.commands = new Map();
 
 const foldersPath = path.join(__dirname, 'commands');
 const commandFolders = fs.readdirSync(foldersPath, { withFileTypes: true });
-
-const AUTO_ROLE_ID = '1395859692269604864';
 
 for (const dirent of commandFolders) {
     if (dirent.isDirectory()) {
@@ -55,11 +55,15 @@ client.once(Events.ClientReady, readyClient => {
 
 // Using the 'guildMemberAdd' property (when a user joins the server)
 client.on('guildMemberAdd', async member => {
+    if (!autoroleCommand.autoRoleEnabled()) return;
+
+    const AUTO_ROLE_ID = autoRoleId;
+
     try {
         await member.roles.add(AUTO_ROLE_ID);
-        console.log(`Auto role added to ${member.user.tag}`);
+        console.log(`Auto role added to: ${member.user.tag}`);
     } catch (error) {
-        console.log('Failed to add role: ', error);
+        console.log('Failed to add role:', error);
     }
 });
 
@@ -67,7 +71,7 @@ client.on('guildMemberAdd', async member => {
 client.on(Events.InteractionCreate, async interaction => {
 	if (!interaction.isChatInputCommand()) return;
 	
-	const command = interaction.client.commands.get(interaction.commandName);
+	const command = client.commands.get(interaction.commandName);
 
 	if (!command) {
 		console.error(`No command matching ${interaction.commandName} was found.`);
