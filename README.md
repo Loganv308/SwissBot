@@ -6,7 +6,7 @@ There will be more commands involving Music, Slots, and overall information shar
 
 ## How to use:
 
-    npm deploy-commands
+    npm run deploy-commands
     
     npm start
 
