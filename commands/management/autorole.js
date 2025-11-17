@@ -14,7 +14,6 @@ module.exports = {
         ),
 
     async execute(interaction) {
-
         if (!allowedUsers.includes(interaction.user.id)) {
             await interaction.reply({
                 content: 'You do not have permission to use this command.',

@@ -1,15 +1,19 @@
 const { SlashCommandBuilder } = require('discord.js');
 const { joinVoiceChannel } = require('@discordjs/voice');
-const { Player, useQueue } = require("discord-player");
+const { useQueue } = require("discord-player");
 
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('queue')
         .setDescription('Shows the current music queue'),
 
-    async execute(interaction, player) {
+    async execute(interaction) {
+
+        const player = interaction.client.player;
 
         const userChannel = interaction.member.voice.channel;
+
+        // console.log(userChannel)
 
         // User MUST be in a voice channel
         if (!userChannel) {
@@ -27,7 +31,7 @@ module.exports = {
         });
 
         // Fetch queue
-        const queue = useQueue();
+        const queue = useQueue(interaction.guild.id);
 
         if (!queue || !queue.current) {
             return interaction.reply({
