@@ -1,6 +1,8 @@
-const { GatewayIntentBits } = require('discord.js');
-const { token } = require('./config.json');
-const BotClient = require('./BotClient');
+import { GatewayIntentBits } from 'discord.js';
+import config from './config.json' with { type: 'json' };
+import BotClient from './BotClient.js';
+
+const { token } = config;
 
 const client = new BotClient({
     intents: [

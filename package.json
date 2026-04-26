@@ -12,5 +12,7 @@
   "scripts": {
     "start": "node index.js",
     "deploy-command": "node deploy-commands"
-  }
+  },
+  "type": "module"
 }
+

@@ -8,10 +8,13 @@ class ServerLogger {
     
         if(!message.guild) return; // Ignores DMs
 
+        await Promise.all([
+            this.upsertGuild(message.guild),
+            this.upsertChannel(message.channel),
+            this.upsertUser(message.author),
+        ]);
+
         try {
-            await this.upsertGuild(message.guild);
-            await this.upsertChannel(message.channel);
-            await this.upsertUser(message.author);
 
             const query = `
                 INSERT INTO messages (
@@ -45,7 +48,7 @@ class ServerLogger {
                 message.author.id,                 // user_id
                 message.content,                   // content (text)
                 attachmentArray,   // attachments (jsonb)
-                new Date(message.createdTimestamp),// timestamp
+                new Date(newMsg.editedTimestamp),// timestamp
                 null,                              // edited_timestamp (default null)
                 false                              // deleted (default false)
             ];
@@ -131,26 +134,22 @@ class ServerLogger {
     }
 
     async logEdit(newMsg) {
-        const query = `
-            UPDATE messages
-            SET 
-                content = $1,
-                edited_timestamp = NOW()
-            WHERE message_id = $2;
-        `;
-
-        await this.db.query(query, [newMsg.content, newMsg.id]);
+        const result = await this.db.query(
+            `UPDATE messages SET content = $1, edited_timestamp = NOW() WHERE message_id = $2`,
+            [newMsg.content, newMsg.id]
+        );
+        if (result.rowCount === 0) {
+            console.warn(`logEdit: message ${newMsg.id} not found in DB`);
+        }
     }
 
     async logDelete(message) {
-        const query = `
-            UPDATE messages
-            SET deleted = TRUE
-            WHERE message_id = $1;
-        `;
-
-        await this.db.query(query, [message.id]);
+        try {
+            await this.db.query(`UPDATE messages SET deleted = TRUE WHERE message_id = $1`, [message.id]);
+        } catch (error) {
+            console.error("logDelete Error:", error);
+        }
     }
 }
 
-export { ServerLogger } 
+export { ServerLogger };
