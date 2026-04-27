@@ -61,6 +61,6 @@ SELECT
     g.name AS guild_name,
     m.attachments
 FROM messages m
-JOIN users u ON m.user_id = u.user_id
+LEFT JOIN users u ON m.user_id = u.user_id
 JOIN channels c ON m.channel_id = c.channel_id
 JOIN guilds g ON m.guild_id = g.guild_id;
