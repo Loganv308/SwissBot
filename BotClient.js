@@ -5,10 +5,11 @@ import { Client, Events, EmbedBuilder } from 'discord.js';
 import config from './config.json' with { type: 'json' };
 import { ServerLogger } from './ServerLogger.js';
 import { Pool } from 'pg';
-import { Player } from 'discord-player';
+import { Player, GuildQueueEvent } from 'discord-player';
+import { DefaultExtractors } from '@discord-player/extractor';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const { databaseHost, databaseUser, databasePass, databaseName } = config;
+const { databaseHost, databaseUser, databasePass, databaseName, spotifyClientId, spotifyClientSecret } = config;
 
 class BotClient extends Client {
     constructor(options) {
@@ -22,7 +23,10 @@ class BotClient extends Client {
             port: 5432
         });
 
-        this.player = new Player(this);
+        this.player = new Player(this, {
+            skipFFmpeg: false
+        });
+
         this.commands = new Map();
         this.logger = new ServerLogger(this.db);
 
@@ -60,7 +64,6 @@ class BotClient extends Client {
         try {
             const logChannelId = await this.logger.getLogChannel(guildId);
             if (!logChannelId) return;
-
             const channel = await this.channels.fetch(logChannelId);
             if (channel) await channel.send({ embeds: [embed] });
         } catch(error) {
@@ -69,13 +72,87 @@ class BotClient extends Client {
     }
 
     registerEvents() {
-        this.once(Events.ClientReady, client => {
+        this.once(Events.ClientReady, async client => {
             console.log(`Ready! Logged in as ${client.user.tag}`);
             this.commands.forEach(cmd => console.log("Loaded command:", cmd.data.name));
+
+            // Load all extractors (YouTube, SoundCloud, Spotify, etc.)
+            await this.player.extractors.loadMulti(DefaultExtractors);
+            console.log('Music extractors loaded');
+
+            // Reminder polling
+            setInterval(async () => {
+                try {
+                    const result = await this.db.query(`
+                        UPDATE reminders
+                        SET delivered = TRUE
+                        WHERE delivered = FALSE AND remind_at <= NOW()
+                        RETURNING *
+                    `);
+
+                    for (const reminder of result.rows) {
+                        try {
+                            const user = await this.users.fetch(reminder.user_id);
+                            await user.send(`⏰ **Reminder:** ${reminder.message}`);
+                        } catch(err) {
+                            console.error(`Failed to send reminder to ${reminder.user_id}:`, err);
+                        }
+                    }
+                } catch(err) {
+                    console.error('Reminder poll error:', err);
+                }
+            }, 30000);
         });
 
+        // ─── Player Events ───────────────────────────────────────────────
+
+        this.player.events.on(GuildQueueEvent.playerStart, (queue, track) => {
+            const channel = queue.metadata?.channel;
+            if (!channel) return;
+
+            const embed = new EmbedBuilder()
+                .setTitle('🎵 Now Playing')
+                .setDescription(`**[${track.title}](${track.url})**`)
+                .setThumbnail(track.thumbnail)
+                .addFields(
+                    { name: 'Duration', value: track.duration, inline: true },
+                    { name: 'Source',   value: track.source,   inline: true },
+                    { name: 'Author',   value: track.author,   inline: true },
+                    { name: 'Requested by', value: `${track.requestedBy}`, inline: true },
+                )
+                .setColor(0x1DB954)
+                .setTimestamp();
+
+            channel.send({ embeds: [embed] });
+        });
+
+        this.player.events.on(GuildQueueEvent.emptyQueue, queue => {
+            const channel = queue.metadata?.channel;
+            if (channel) channel.send('✅ Queue finished. Leaving voice channel.');
+        });
+
+        this.player.events.on(GuildQueueEvent.emptyChannel, queue => {
+            const channel = queue.metadata?.channel;
+            if (channel) channel.send('👋 Everyone left — leaving voice channel.');
+        });
+
+        this.player.events.on(GuildQueueEvent.playerError, (queue, error) => {
+            console.error('Player error:', error);
+            const channel = queue.metadata?.channel;
+            if (channel) channel.send(`❌ Player error: ${error.message}`);
+        });
+
+        this.player.events.on(GuildQueueEvent.error, (queue, error) => {
+            console.error('Queue error:', error);
+            const channel = queue.metadata?.channel;
+            if (channel) channel.send(`❌ Queue error: ${error.message}`);
+        });
+
+        this.player.events.on('debug', console.log);
+
+        // ─── Discord Events ───────────────────────────────────────────────
+
         this.on(Events.GuildMemberAdd, async member => {
-            // Autorole
             try {
                 const result = await this.db.query(
                     `SELECT autorole_id, autorole_enabled FROM guild_settings WHERE guild_id = $1`,
@@ -90,17 +167,15 @@ class BotClient extends Client {
                 console.error("Autorole Error:", error);
             }
 
-            // Log to DB
             await this.logger.logMemberEvent(member, 'join');
 
-            // Audit embed
             const embed = new EmbedBuilder()
                 .setTitle('Member Joined')
                 .setColor(0x57F287)
                 .setThumbnail(member.user.displayAvatarURL())
                 .addFields(
-                    { name: 'User', value: `<@${member.user.id}> (${member.user.tag})`, inline: true },
-                    { name: 'User ID', value: member.user.id, inline: true },
+                    { name: 'User',            value: `<@${member.user.id}> (${member.user.tag})`, inline: true },
+                    { name: 'User ID',         value: member.user.id, inline: true },
                     { name: 'Account Created', value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:F>`, inline: false },
                 )
                 .setTimestamp();
@@ -116,8 +191,8 @@ class BotClient extends Client {
                 .setColor(0xED4245)
                 .setThumbnail(member.user.displayAvatarURL())
                 .addFields(
-                    { name: 'User', value: `<@${member.user.id}> (${member.user.tag})`, inline: true },
-                    { name: 'User ID', value: member.user.id, inline: true },
+                    { name: 'User',      value: `<@${member.user.id}> (${member.user.tag})`, inline: true },
+                    { name: 'User ID',   value: member.user.id, inline: true },
                     { name: 'Joined At', value: member.joinedAt ? `<t:${Math.floor(member.joinedTimestamp / 1000)}:F>` : 'Unknown', inline: false },
                 )
                 .setTimestamp();
@@ -135,19 +210,18 @@ class BotClient extends Client {
             await this.logger.logEdit(newMsg);
 
             const attachments = [...newMsg.attachments.values()];
-
             const embed = new EmbedBuilder()
                 .setTitle('Message Edited')
                 .setColor(0xFEE75C)
                 .addFields(
-                    { name: 'User', value: `<@${newMsg.author.id}> (${newMsg.author.tag})`, inline: true },
-                    { name: 'User ID', value: newMsg.author.id, inline: true },
-                    { name: 'Channel', value: `<#${newMsg.channel.id}> (#${newMsg.channel.name})`, inline: false },
-                    { name: 'Message ID', value: newMsg.id, inline: true },
-                    { name: 'Jump to Message', value: `[Click here](${newMsg.url})`, inline: true },
-                    { name: 'Before', value: oldMsg.content || '*No content*', inline: false },
-                    { name: 'After', value: newMsg.content || '*No content*', inline: false },
-                    { name: 'Edited At', value: `<t:${Math.floor(newMsg.editedTimestamp / 1000)}:F>`, inline: false },
+                    { name: 'User',           value: `<@${newMsg.author.id}> (${newMsg.author.tag})`, inline: true },
+                    { name: 'User ID',        value: newMsg.author.id, inline: true },
+                    { name: 'Channel',        value: `<#${newMsg.channel.id}> (#${newMsg.channel.name})`, inline: false },
+                    { name: 'Message ID',     value: newMsg.id, inline: true },
+                    { name: 'Jump to Message',value: `[Click here](${newMsg.url})`, inline: true },
+                    { name: 'Before',         value: oldMsg.content || '*No content*', inline: false },
+                    { name: 'After',          value: newMsg.content || '*No content*', inline: false },
+                    { name: 'Edited At',      value: `<t:${Math.floor(newMsg.editedTimestamp / 1000)}:F>`, inline: false },
                 )
                 .setTimestamp();
 
@@ -165,21 +239,20 @@ class BotClient extends Client {
         this.on(Events.MessageDelete, async message => {
             await this.logger.logDelete(message);
 
-            // Discord may not have the full message cached — handle partial
-            const content = message.content || '*Content not cached*';
-            const author = message.author;
+            const content     = message.content || '*Content not cached*';
+            const author      = message.author;
             const attachments = [...(message.attachments?.values() ?? [])];
 
             const embed = new EmbedBuilder()
                 .setTitle('Message Deleted')
                 .setColor(0xED4245)
                 .addFields(
-                    { name: 'User', value: author ? `<@${author.id}> (${author.tag})` : 'Unknown', inline: true },
-                    { name: 'User ID', value: author?.id || 'Unknown', inline: true },
-                    { name: 'Channel', value: `<#${message.channel.id}> (#${message.channel.name})`, inline: false },
-                    { name: 'Message ID', value: message.id, inline: true },
-                    { name: 'Content', value: content, inline: false },
-                    { name: 'Originally Sent', value: message.createdAt ? `<t:${Math.floor(message.createdTimestamp / 1000)}:F>` : 'Unknown', inline: false },
+                    { name: 'User',           value: author ? `<@${author.id}> (${author.tag})` : 'Unknown', inline: true },
+                    { name: 'User ID',        value: author?.id || 'Unknown', inline: true },
+                    { name: 'Channel',        value: `<#${message.channel.id}> (#${message.channel.name})`, inline: false },
+                    { name: 'Message ID',     value: message.id, inline: true },
+                    { name: 'Content',        value: content, inline: false },
+                    { name: 'Originally Sent',value: message.createdAt ? `<t:${Math.floor(message.createdTimestamp / 1000)}:F>` : 'Unknown', inline: false },
                 )
                 .setTimestamp();
 

@@ -1,10 +1,19 @@
 {
   "dependencies": {
+    "@discord-player/extractor": "^7.2.0",
+    "@discordjs/opus": "^0.10.0",
     "@discordjs/voice": "^0.19.0",
+    "@distube/soundcloud": "^2.0.4",
+    "@distube/spotify": "^2.0.2",
+    "@distube/youtube": "^1.0.4",
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@snazzah/davey": "^0.1.7",
-    "discord-player": "^7.1.0",
+    "discord-player": "^7.2.0",
     "discord.js": "^14.16.3",
-    "pg": "^8.16.3"
+    "distube": "^5.2.3",
+    "ffmpeg-static": "^5.3.0",
+    "pg": "^8.16.3",
+    "play-dl": "^1.9.7"
   },
   "devDependencies": {
     "eslint": "^9.16.0"
@@ -15,4 +24,3 @@
   },
   "type": "module"
 }
-

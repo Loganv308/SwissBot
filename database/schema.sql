@@ -66,6 +66,7 @@ CREATE INDEX idx_messages_attachments_gin ON messages USING GIN(attachments);
 CREATE INDEX idx_reminders_remind_at ON reminders(remind_at);
 CREATE INDEX idx_member_events_guild ON member_events(guild_id);
 CREATE INDEX idx_member_events_user  ON member_events(user_id);
+CREATE INDEX idx_reminders_remind_at ON reminders(remind_at);
 CREATE INDEX idx_reminders_delivered ON reminders(delivered);
 
 CREATE VIEW message_log_view AS
