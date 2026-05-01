@@ -11,11 +11,9 @@ export async function execute(interaction) {
     if (!queue?.currentTrack) {
         return interaction.reply({ content: '❌ Nothing is playing.', ephemeral: true });
     }
-
     if (queue.tracks.size === 0) {
-        return interaction.reply({ content: '❌ Not enough tracks in queue to shuffle.', ephemeral: true });
+        return interaction.reply({ content: '❌ Not enough tracks to shuffle.', ephemeral: true });
     }
-
     if (!interaction.member.voice.channel) {
         return interaction.reply({ content: '❌ You must be in a voice channel.', ephemeral: true });
     }

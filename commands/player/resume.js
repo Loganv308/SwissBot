@@ -11,13 +11,11 @@ export async function execute(interaction) {
     if (!queue?.currentTrack) {
         return interaction.reply({ content: '❌ Nothing is playing.', ephemeral: true });
     }
-
     if (!interaction.member.voice.channel) {
         return interaction.reply({ content: '❌ You must be in a voice channel.', ephemeral: true });
     }
-
     if (!queue.node.isPaused()) {
-        return interaction.reply({ content: '▶️ Already playing. Use `/pause` to pause.', ephemeral: true });
+        return interaction.reply({ content: '▶️ Already playing.', ephemeral: true });
     }
 
     queue.node.resume();

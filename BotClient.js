@@ -7,9 +7,26 @@ import { ServerLogger } from './ServerLogger.js';
 import { Pool } from 'pg';
 import { Player, GuildQueueEvent } from 'discord-player';
 import { DefaultExtractors } from '@discord-player/extractor';
+import { YtDlpExtractor } from './YoutubeDownloader/YtDlpExtractor.js';
+import { createReadStream } from 'node:fs';
+import { spawn } from 'node:child_process';
+
+import { createRequire } from 'node:module';
+import { execSync } from 'node:child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const { databaseHost, databaseUser, databasePass, databaseName, spotifyClientId, spotifyClientSecret } = config;
+const { databaseHost, databaseUser, databasePass, databaseName } = config;
+
+process.env.YTDL_PATH = process.platform === 'win32'
+    ? join(__dirname, 'yt-dlp.exe')
+    : execSync('which yt-dlp').toString().trim();
+
+process.env.DP_FORCE_YTDL_DRIVER = 'yt-dlp';
+
+process.env.SPOTIFY_CLIENT_ID     = config.spotifyClientId;
+process.env.SPOTIFY_CLIENT_SECRET = config.spotifyClientSecret;
+
+process.env.FFMPEG_PATH = 'C:\\Users\\burni\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-8.1-full_build\\bin\\ffmpeg.exe';
 
 class BotClient extends Client {
     constructor(options) {
@@ -24,8 +41,12 @@ class BotClient extends Client {
         });
 
         this.player = new Player(this, {
-            skipFFmpeg: false
+            skipFFmpeg: false,
         });
+
+        const ytdlp = spawn(process.env.YTDL_PATH ?? 'yt-dlp', ['--version']);
+        ytdlp.stdout.on('data', d => console.log('yt-dlp version:', d.toString().trim()));
+        ytdlp.on('error', e => console.error('yt-dlp not found:', e.message));
 
         this.commands = new Map();
         this.logger = new ServerLogger(this.db);
@@ -74,13 +95,14 @@ class BotClient extends Client {
     registerEvents() {
         this.once(Events.ClientReady, async client => {
             console.log(`Ready! Logged in as ${client.user.tag}`);
+            console.log(`Ping: ${client.ws.ping}ms`);
             this.commands.forEach(cmd => console.log("Loaded command:", cmd.data.name));
 
-            // Load all extractors (YouTube, SoundCloud, Spotify, etc.)
+            // Very important line to import all Extractors
             await this.player.extractors.loadMulti(DefaultExtractors);
-            console.log('Music extractors loaded');
+            await this.player.extractors.register(YtDlpExtractor, {});
+            console.log('Registered extractors:', [...this.player.extractors.store.keys()]);
 
-            // Reminder polling
             setInterval(async () => {
                 try {
                     const result = await this.db.query(`
@@ -89,7 +111,6 @@ class BotClient extends Client {
                         WHERE delivered = FALSE AND remind_at <= NOW()
                         RETURNING *
                     `);
-
                     for (const reminder of result.rows) {
                         try {
                             const user = await this.users.fetch(reminder.user_id);
@@ -104,9 +125,10 @@ class BotClient extends Client {
             }, 30000);
         });
 
-        // ─── Player Events ───────────────────────────────────────────────
+        // ─── Player Events ────────────────────────────────────────────────
 
         this.player.events.on(GuildQueueEvent.playerStart, (queue, track) => {
+            console.log('[Player] Started:', track.title, '| Source:', track.source);
             const channel = queue.metadata?.channel;
             if (!channel) return;
 
@@ -115,15 +137,24 @@ class BotClient extends Client {
                 .setDescription(`**[${track.title}](${track.url})**`)
                 .setThumbnail(track.thumbnail)
                 .addFields(
-                    { name: 'Duration', value: track.duration, inline: true },
-                    { name: 'Source',   value: track.source,   inline: true },
-                    { name: 'Author',   value: track.author,   inline: true },
+                    { name: 'Duration',     value: track.duration,         inline: true },
+                    { name: 'Source',       value: track.source,           inline: true },
+                    { name: 'Author',       value: track.author,           inline: true },
                     { name: 'Requested by', value: `${track.requestedBy}`, inline: true },
                 )
                 .setColor(0x1DB954)
                 .setTimestamp();
 
             channel.send({ embeds: [embed] });
+        });
+
+        this.player.events.on(GuildQueueEvent.playerFinish, (queue, track) => {
+            console.log('[Player] Finished:', track.title);
+        });
+
+        this.player.events.on(GuildQueueEvent.playerSkip, (queue, track) => {
+            console.error('[Player] Track was skipped - likely a stream/ffmpeg error:', track.title);
+            queue.metadata?.channel?.send(`⚠️ Failed to play **${track.title}** — skipped.`);
         });
 
         this.player.events.on(GuildQueueEvent.emptyQueue, queue => {
@@ -136,19 +167,25 @@ class BotClient extends Client {
             if (channel) channel.send('👋 Everyone left — leaving voice channel.');
         });
 
-        this.player.events.on(GuildQueueEvent.playerError, (queue, error) => {
-            console.error('Player error:', error);
+        this.player.events.on('playerError', (queue, error, track) => {
+            console.error('[Player] playerError:', error?.message, '| Track:', track?.title);
             const channel = queue.metadata?.channel;
-            if (channel) channel.send(`❌ Player error: ${error.message}`);
+            if (channel) channel.send(`❌ Player error: ${error?.message}`);
         });
 
-        this.player.events.on(GuildQueueEvent.error, (queue, error) => {
-            console.error('Queue error:', error);
+        this.player.events.on('error', (queue, error) => {
+            console.error('[Player] Queue error:', error?.message);
             const channel = queue.metadata?.channel;
-            if (channel) channel.send(`❌ Queue error: ${error.message}`);
+            if (channel) channel.send(`❌ Queue error: ${error?.message}`);
         });
 
-        this.player.events.on('debug', console.log);
+        this.player.events.on(GuildQueueEvent.playerTrigger, (queue, track, reason) => {
+            console.log('[Player] Trigger:', reason, '| Track:', track.title);
+        });
+
+        this.player.events.on(GuildQueueEvent.connectionCreate, (queue, connection) => {
+            console.log('[Player] Voice connection created');
+        });
 
         // ─── Discord Events ───────────────────────────────────────────────
 
@@ -214,14 +251,14 @@ class BotClient extends Client {
                 .setTitle('Message Edited')
                 .setColor(0xFEE75C)
                 .addFields(
-                    { name: 'User',           value: `<@${newMsg.author.id}> (${newMsg.author.tag})`, inline: true },
-                    { name: 'User ID',        value: newMsg.author.id, inline: true },
-                    { name: 'Channel',        value: `<#${newMsg.channel.id}> (#${newMsg.channel.name})`, inline: false },
-                    { name: 'Message ID',     value: newMsg.id, inline: true },
-                    { name: 'Jump to Message',value: `[Click here](${newMsg.url})`, inline: true },
-                    { name: 'Before',         value: oldMsg.content || '*No content*', inline: false },
-                    { name: 'After',          value: newMsg.content || '*No content*', inline: false },
-                    { name: 'Edited At',      value: `<t:${Math.floor(newMsg.editedTimestamp / 1000)}:F>`, inline: false },
+                    { name: 'User',            value: `<@${newMsg.author.id}> (${newMsg.author.tag})`, inline: true },
+                    { name: 'User ID',         value: newMsg.author.id, inline: true },
+                    { name: 'Channel',         value: `<#${newMsg.channel.id}> (#${newMsg.channel.name})`, inline: false },
+                    { name: 'Message ID',      value: newMsg.id, inline: true },
+                    { name: 'Jump to Message', value: `[Click here](${newMsg.url})`, inline: true },
+                    { name: 'Before',          value: oldMsg.content || '*No content*', inline: false },
+                    { name: 'After',           value: newMsg.content || '*No content*', inline: false },
+                    { name: 'Edited At',       value: `<t:${Math.floor(newMsg.editedTimestamp / 1000)}:F>`, inline: false },
                 )
                 .setTimestamp();
 
@@ -247,12 +284,12 @@ class BotClient extends Client {
                 .setTitle('Message Deleted')
                 .setColor(0xED4245)
                 .addFields(
-                    { name: 'User',           value: author ? `<@${author.id}> (${author.tag})` : 'Unknown', inline: true },
-                    { name: 'User ID',        value: author?.id || 'Unknown', inline: true },
-                    { name: 'Channel',        value: `<#${message.channel.id}> (#${message.channel.name})`, inline: false },
-                    { name: 'Message ID',     value: message.id, inline: true },
-                    { name: 'Content',        value: content, inline: false },
-                    { name: 'Originally Sent',value: message.createdAt ? `<t:${Math.floor(message.createdTimestamp / 1000)}:F>` : 'Unknown', inline: false },
+                    { name: 'User',            value: author ? `<@${author.id}> (${author.tag})` : 'Unknown', inline: true },
+                    { name: 'User ID',         value: author?.id || 'Unknown', inline: true },
+                    { name: 'Channel',         value: `<#${message.channel.id}> (#${message.channel.name})`, inline: false },
+                    { name: 'Message ID',      value: message.id, inline: true },
+                    { name: 'Content',         value: content, inline: false },
+                    { name: 'Originally Sent', value: message.createdAt ? `<t:${Math.floor(message.createdTimestamp / 1000)}:F>` : 'Unknown', inline: false },
                 )
                 .setTimestamp();
 
@@ -278,14 +315,22 @@ class BotClient extends Client {
             } catch(err) {
                 console.error(err);
                 const reply = { content: "There was an error!", ephemeral: true };
-                if (interaction.replied || interaction.deferred) {
-                    await interaction.followUp(reply);
-                } else {
-                    await interaction.reply(reply);
+                try {
+                    if (interaction.replied || interaction.deferred) {
+                        await interaction.editReply(reply);
+                    } else {
+                        await interaction.reply(reply);
+                    }
+                } catch(e) {
+                    console.error('Failed to send error reply:', e.message);
                 }
             }
         });
     }
 }
+
+process.on('unhandledRejection', (reason) => {
+    console.error('[Unhandled Rejection]', reason);
+});
 
 export default BotClient;

@@ -1,6 +1,12 @@
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
 import { useQueue } from 'discord-player';
-import { formatBar } from './musicUtils.js';
+
+function formatBar(current, total, length = 15) {
+    const progress = Math.floor((current / total) * length);
+    const filled   = '▓'.repeat(progress);
+    const empty    = '░'.repeat(length - progress);
+    return `${filled}${empty}`;
+}
 
 export const data = new SlashCommandBuilder()
     .setName('nowplaying')
@@ -19,7 +25,6 @@ export async function execute(interaction) {
     const total     = timestamp?.total.value    ?? 0;
     const bar       = formatBar(current, total);
     const paused    = queue.node.isPaused();
-    const loopMode  = queue.repeatMode;
 
     const loopLabels = { 0: 'Off', 1: '🔂 Track', 2: '🔁 Queue', 3: '🔀 Autoplay' };
 
@@ -29,12 +34,12 @@ export async function execute(interaction) {
         .setThumbnail(track.thumbnail)
         .setColor(0x1DB954)
         .addFields(
-            { name: 'Author',       value: track.author,                    inline: true },
-            { name: 'Source',       value: track.source,                    inline: true },
-            { name: 'Requested by', value: `${track.requestedBy}`,          inline: true },
-            { name: 'Loop',         value: loopLabels[loopMode] ?? 'Off',   inline: true },
-            { name: 'Volume',       value: `${queue.node.volume}%`,         inline: true },
-            { name: 'Queue Size',   value: `${queue.tracks.size} tracks`,   inline: true },
+            { name: 'Author',       value: track.author,                        inline: true },
+            { name: 'Source',       value: track.source,                        inline: true },
+            { name: 'Requested by', value: `${track.requestedBy}`,              inline: true },
+            { name: 'Loop',         value: loopLabels[queue.repeatMode] ?? 'Off', inline: true },
+            { name: 'Volume',       value: `${queue.node.volume}%`,             inline: true },
+            { name: 'Queue Size',   value: `${queue.tracks.size} tracks`,       inline: true },
             { name: 'Progress',     value: `\`${timestamp?.current.label ?? '0:00'} ${bar} ${timestamp?.total.label ?? track.duration}\``, inline: false },
         )
         .setTimestamp();

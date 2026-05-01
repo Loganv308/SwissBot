@@ -11,7 +11,6 @@ export async function execute(interaction) {
     if (!queue?.currentTrack) {
         return interaction.reply({ content: '❌ Nothing is playing.', ephemeral: true });
     }
-
     if (!interaction.member.voice.channel) {
         return interaction.reply({ content: '❌ You must be in a voice channel.', ephemeral: true });
     }
