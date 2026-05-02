@@ -1,18 +1,16 @@
-import { readdirSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { DefaultExtractors } from '@discord-player/extractor';
+import { GuildQueueEvent, Player } from 'discord-player';
+import { Client, EmbedBuilder, Events } from 'discord.js';
+import { spawn } from 'node:child_process';
+import { createReadStream, readdirSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { Client, Events, EmbedBuilder } from 'discord.js';
+import { Pool } from 'pg';
+
 import config from './config.json' with { type: 'json' };
 import { ServerLogger } from './ServerLogger.js';
-import { Pool } from 'pg';
-import { Player, GuildQueueEvent } from 'discord-player';
-import { DefaultExtractors } from '@discord-player/extractor';
 import { YtDlpExtractor } from './YoutubeDownloader/YtDlpExtractor.js';
-import { createReadStream } from 'node:fs';
-import { spawn } from 'node:child_process';
-
-import { createRequire } from 'node:module';
-import { execSync } from 'node:child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const { databaseHost, databaseUser, databasePass, databaseName } = config;
