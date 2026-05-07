@@ -1,4 +1,4 @@
-# Swiss 🇨🇭
+# Swiss - Discord Bot
 ### A full-featured Discord bot with message logging, moderation, music, and utilities — built with Node.js and PostgreSQL.
 
 ---
