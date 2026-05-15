@@ -3,10 +3,17 @@ import { spawn } from 'node:child_process';
 
 const YTDLP = process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp';
 
-// Cache search results and direct URLs to avoid redundant yt-dlp calls
-const searchCache   = new Map(); // query -> { tracks, timestamp }
-const directUrlCache = new Map(); // youtube url -> { url, timestamp }
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+// ─── Constants ─────────────────────────────────────────────────────────────
+
+const CACHE_TTL        = 5 * 60 * 1000;  // 5 minutes
+const PLAYLIST_LIMIT   = 100;            // Max tracks to load from a playlist
+const PLAYLIST_PREFETCH = 5;            // How many tracks to prefetch URLs for upfront
+
+// ─── Cache ─────────────────────────────────────────────────────────────────
+
+const searchCache    = new Map(); // query    -> { value, timestamp }
+const directUrlCache = new Map(); // yt url   -> { value, timestamp }
+const playlistCache  = new Map(); // list url -> { value, timestamp }
 
 function getCached(cache, key) {
     const entry = cache.get(key);
@@ -19,78 +26,133 @@ function setCache(cache, key, value) {
     cache.set(key, { value, timestamp: Date.now() });
 }
 
-function ytdlpExec(args, timeoutMs = 15000) {
+// ─── yt-dlp Runner ─────────────────────────────────────────────────────────
+
+function ytdlpExec(args, timeoutMs = 20000) {
     return new Promise((resolve, reject) => {
-        const proc = spawn(YTDLP, args);
+        const proc  = spawn(YTDLP, args);
         let out = '';
 
         const timer = setTimeout(() => {
-            console.error(`[YtDlpExtractor] yt-dlp couldn't find any results after ${timeoutMs}ms, try being more specific.`);
+            console.warn(`[YtDlpExtractor] Timeout after ${timeoutMs}ms`);
             proc.kill('SIGKILL');
-            resolve(''); // resolve empty so handle() returns no results gracefully
+            resolve('');
         }, timeoutMs);
 
         proc.stdout.on('data', d => out += d.toString());
         proc.stderr.resume();
-        proc.on('close', () => {
-            clearTimeout(timer);
-            resolve(out.trim());
-        });
-        proc.on('error', (err) => {
-            clearTimeout(timer);
-            reject(err);
-        });
+        proc.on('close', () => { clearTimeout(timer); resolve(out.trim()); });
+        proc.on('error', err => { clearTimeout(timer); reject(err); });
     });
 }
 
-async function search(query, limit = 3) {
+// ─── Core Fetchers ─────────────────────────────────────────────────────────
+
+// Text search: 1 result, get metadata + direct URL in a single yt-dlp call
+async function searchOne(query) {
     const cached = getCached(searchCache, query);
     if (cached) {
-        console.log(`[YtDlpExtractor] Cache hit for search: "${query}"`);
+        console.log(`[YtDlpExtractor] Cache hit: "${query}"`);
         return cached;
     }
 
+    // Single yt-dlp call: dump JSON + get direct audio URL at the same time
     const out = await ytdlpExec([
-        `ytsearch${limit}:${query}`,
+        `ytsearch1:${query}`,
         '--dump-json',
         '--no-playlist',
         '--match-filter', 'duration > 0',
         '--no-warnings',
         '-q',
+        '-f', 'bestaudio[ext=webm]/bestaudio',
         '--extractor-args', 'youtube:skip=dash,hls',
-        '--socket-timeout', '10',  // give up on slow connections after 10s
+        '--socket-timeout', '10',
     ]);
 
-    if (!out) return [];
-    const results = out.split('\n').filter(Boolean).map(line => {
-        try { return JSON.parse(line); } catch { return null; }
-    }).filter(r => r?.webpage_url?.includes('watch?v='));
+    if (!out) return null;
 
-    setCache(searchCache, query, results);
-    return results;
+    try {
+        const info = JSON.parse(out.split('\n')[0]);
+        // Extract the direct URL from the chosen format
+        const directUrl = info.url ?? info.formats?.find(f => f.url)?.url ?? null;
+        const result = { info, directUrl };
+        setCache(searchCache, query, result);
+        return result;
+    } catch {
+        return null;
+    }
 }
 
-async function getInfo(url) {
+// Direct URL: get metadata + direct audio URL in one call
+async function getVideoInfoAndUrl(url) {
+    const cachedUrl = getCached(directUrlCache, url);
+    if (cachedUrl) {
+        console.log(`[YtDlpExtractor] Cache hit (direct): ${url}`);
+        return cachedUrl;
+    }
+
     const out = await ytdlpExec([
         url,
         '--dump-json',
         '--no-playlist',
         '--no-warnings',
         '-q',
+        '-f', 'bestaudio[ext=webm]/bestaudio',
         '--extractor-args', 'youtube:skip=dash,hls',
     ]);
-    return JSON.parse(out);
+
+    if (!out) return null;
+
+    try {
+        const info = JSON.parse(out);
+        const directUrl = info.url ?? info.formats?.find(f => f.url)?.url ?? null;
+        const result = { info, directUrl };
+        setCache(directUrlCache, url, result);
+        return result;
+    } catch {
+        return null;
+    }
 }
 
-async function getDirectUrl(url) {
-    const cached = getCached(directUrlCache, url);
+// Playlist: fetch up to PLAYLIST_LIMIT track metadata entries
+async function getPlaylistTracks(url) {
+    const cached = getCached(playlistCache, url);
     if (cached) {
-        console.log(`[YtDlpExtractor] Cache hit for direct URL: ${url}`);
+        console.log(`[YtDlpExtractor] Cache hit (playlist): ${url}`);
         return cached;
     }
 
+    console.log(`[YtDlpExtractor] Fetching playlist (limit ${PLAYLIST_LIMIT})...`);
     const out = await ytdlpExec([
         url,
+        '--dump-json',
+        '--yes-playlist',
+        '--playlist-end', String(PLAYLIST_LIMIT),
+        '--no-warnings',
+        '-q',
+        '--flat-playlist',          // Fast: only fetches metadata, not stream URLs
+        '--extractor-args', 'youtube:skip=dash,hls',
+        '--socket-timeout', '10',
+    ], 60000); // longer timeout for big playlists
+
+    if (!out) return [];
+
+    const tracks = out.split('\n')
+        .filter(Boolean)
+        .map(line => { try { return JSON.parse(line); } catch { return null; } })
+        .filter(r => r?.url || r?.webpage_url);
+
+    setCache(playlistCache, url, tracks);
+    return tracks;
+}
+
+// Fetch just the direct stream URL for a single known video URL
+async function getDirectUrl(videoUrl) {
+    const cached = getCached(directUrlCache, videoUrl);
+    if (cached?.directUrl) return cached.directUrl;
+
+    const out = await ytdlpExec([
+        videoUrl,
         '-f', 'bestaudio[ext=webm]/bestaudio',
         '--get-url',
         '--no-playlist',
@@ -100,9 +162,35 @@ async function getDirectUrl(url) {
     ]);
 
     const directUrl = out.split('\n')[0].trim();
-    setCache(directUrlCache, url, directUrl);
+    setCache(directUrlCache, videoUrl, { info: null, directUrl });
     return directUrl;
 }
+
+// ─── Track Builder ─────────────────────────────────────────────────────────
+
+function buildTrack(player, info, context, directUrl = null) {
+    const durationSec = info.duration ?? 0;
+    const mins = Math.floor(durationSec / 60);
+    const secs = String(durationSec % 60).padStart(2, '0');
+
+    // --flat-playlist gives us url (relative ID) or webpage_url
+    const trackUrl = info.webpage_url
+        ?? (info.url?.startsWith('http') ? info.url : `https://www.youtube.com/watch?v=${info.url}`);
+
+    return new Track(player, {
+        title:       info.title     ?? 'Unknown',
+        url:         trackUrl,
+        duration:    `${mins}:${secs}`,
+        thumbnail:   info.thumbnail ?? `https://i.ytimg.com/vi/${info.id}/hqdefault.jpg`,
+        author:      info.uploader  ?? info.channel ?? info.uploader_id ?? 'Unknown',
+        requestedBy: context.requestedBy,
+        source:      'youtube',
+        queryType:   'youtubeVideo',
+        metadata:    { ...info, cachedDirectUrl: directUrl },
+    });
+}
+
+// ─── Extractor ─────────────────────────────────────────────────────────────
 
 export class YtDlpExtractor extends BaseExtractor {
     static identifier = 'com.swissarmybot.ytdlp-extractor';
@@ -116,7 +204,7 @@ export class YtDlpExtractor extends BaseExtractor {
 
     async validate(query) {
         return (
-            query.includes('youtube.com/watch') ||
+            query.includes('youtube.com') ||
             query.includes('youtu.be/') ||
             (!query.startsWith('http://') && !query.startsWith('https://'))
         );
@@ -125,75 +213,77 @@ export class YtDlpExtractor extends BaseExtractor {
     async handle(query, context) {
         const t0 = Date.now();
         console.log(`[YtDlpExtractor] handle() called with: "${query}"`);
+
         try {
-            if (query.includes('youtube.com/watch') || query.includes('youtu.be/')) {
-                console.log('[YtDlpExtractor] Direct URL, fetching info + stream URL in parallel...');
-                const [info, directUrl] = await Promise.all([
-                    getInfo(query).then(r  => { console.log(`[YtDlpExtractor] getInfo() done in ${Date.now() - t0}ms`);      return r; }),
-                    getDirectUrl(query).then(r => { console.log(`[YtDlpExtractor] getDirectUrl() done in ${Date.now() - t0}ms`); return r; }),
-                ]);
-                const track = this.buildTrack(info, context, directUrl);
-                console.log(`[YtDlpExtractor] handle() complete in ${Date.now() - t0}ms`);
-                return this.createResponse(null, [track]);
-            } else {
-                console.log('[YtDlpExtractor] Text search...');
-                const results = await search(query);
-                console.log(`[YtDlpExtractor] search() done in ${Date.now() - t0}ms — ${results.length} results`);
+            // ── Playlist URL ───────────────────────────────────────────────
+            const isPlaylist = query.includes('youtube.com') &&
+                               query.includes('list=') &&
+                               !query.includes('watch?v='); // watch?v= with list= = single video
 
-                if (!results.length) return this.createResponse(null, []);
+            if (isPlaylist) {
+                console.log('[YtDlpExtractor] Playlist detected...');
+                const rawTracks = await getPlaylistTracks(query);
 
-                const tracks = results.map(r => this.buildTrack(r, context));
+                if (!rawTracks.length) return this.createResponse(null, []);
 
-                // Prefetch stream URL for first track in background
-                if (tracks[0]) {
-                    const tp = Date.now();
-                    console.log(`[YtDlpExtractor] Prefetching stream URL for: "${tracks[0].title}"`);
-                    getDirectUrl(tracks[0].url).then(url => {
-                        tracks[0].metadata.cachedDirectUrl = url;
-                        console.log(`[YtDlpExtractor] Prefetch done in ${Date.now() - tp}ms`);
-                    }).catch(err => console.error('[YtDlpExtractor] Prefetch failed:', err.message));
+                const tracks = rawTracks.map(r => buildTrack(this.context.player, r, context));
+
+                // Prefetch direct URLs for first N tracks in background
+                console.log(`[YtDlpExtractor] Prefetching first ${PLAYLIST_PREFETCH} stream URLs...`);
+                for (let i = 0; i < Math.min(PLAYLIST_PREFETCH, tracks.length); i++) {
+                    const t = tracks[i];
+                    getDirectUrl(t.url).then(url => {
+                        t.metadata.cachedDirectUrl = url;
+                        console.log(`[YtDlpExtractor] Prefetched [${i + 1}]: "${t.title}"`);
+                    }).catch(err => console.error(`[YtDlpExtractor] Prefetch failed [${i}]:`, err.message));
                 }
 
-                console.log(`[YtDlpExtractor] handle() returning ${tracks.length} tracks in ${Date.now() - t0}ms`);
+                console.log(`[YtDlpExtractor] Playlist loaded: ${tracks.length} tracks in ${Date.now() - t0}ms`);
                 return this.createResponse(null, tracks);
             }
-        } catch(err) {
+
+            // ── Direct Video URL ───────────────────────────────────────────
+            if (query.includes('youtube.com/watch') || query.includes('youtu.be/')) {
+                console.log('[YtDlpExtractor] Direct video URL...');
+                const result = await getVideoInfoAndUrl(query);
+                if (!result) return this.createResponse(null, []);
+
+                const track = buildTrack(this.context.player, result.info, context, result.directUrl);
+                console.log(`[YtDlpExtractor] Direct URL ready in ${Date.now() - t0}ms`);
+                return this.createResponse(null, [track]);
+            }
+
+            // ── Text Search ────────────────────────────────────────────────
+            console.log('[YtDlpExtractor] Text search...');
+            const result = await searchOne(query);
+
+            if (!result) return this.createResponse(null, []);
+
+            // directUrl is already fetched — stream() will have zero wait time
+            const track = buildTrack(this.context.player, result.info, context, result.directUrl);
+            console.log(`[YtDlpExtractor] Search ready in ${Date.now() - t0}ms`);
+            return this.createResponse(null, [track]);
+
+        } catch (err) {
             console.error(`[YtDlpExtractor] handle() error after ${Date.now() - t0}ms:`, err.message);
             return this.createResponse(null, []);
         }
     }
 
-    buildTrack(info, context, directUrl = null) {
-        const durationSec = info.duration ?? 0;
-        const mins = Math.floor(durationSec / 60);
-        const secs = String(durationSec % 60).padStart(2, '0');
-
-        return new Track(this.context.player, {
-            title:       info.title       ?? 'Unknown',
-            url:         info.webpage_url ?? info.url,
-            duration:    `${mins}:${secs}`,
-            thumbnail:   info.thumbnail   ?? '',
-            author:      info.uploader    ?? info.channel ?? 'Unknown',
-            requestedBy: context.requestedBy,
-            source:      'youtube',
-            queryType:   'youtubeVideo',
-            metadata:    { ...info, cachedDirectUrl: directUrl },
-        });
-    }
-
     async stream(track) {
         const t0 = Date.now();
         const ffmpegPath = process.env.FFMPEG_PATH ?? 'ffmpeg';
-        console.log(`[YtDlpExtractor] stream() called for: "${track.title}"`);
+        console.log(`[YtDlpExtractor] stream() called: "${track.title}"`);
 
         try {
             let directUrl = track.metadata?.cachedDirectUrl;
+
             if (directUrl) {
-                console.log(`[YtDlpExtractor] Using prefetched URL (0ms wait)`);
+                console.log(`[YtDlpExtractor] Using cached URL (0ms wait)`);
             } else {
-                console.log('[YtDlpExtractor] No cached URL, fetching now...');
+                console.log('[YtDlpExtractor] No cached URL, fetching...');
                 directUrl = await getDirectUrl(track.url);
-                console.log(`[YtDlpExtractor] getDirectUrl() done in ${Date.now() - t0}ms`);
+                console.log(`[YtDlpExtractor] Fetched in ${Date.now() - t0}ms`);
             }
 
             const ffmpeg = spawn(ffmpegPath, [
@@ -207,10 +297,10 @@ export class YtDlpExtractor extends BaseExtractor {
             ]);
 
             ffmpeg.stderr.resume();
-            console.log(`[YtDlpExtractor] ffmpeg spawned, stream ready in ${Date.now() - t0}ms`);
+            console.log(`[YtDlpExtractor] ffmpeg ready in ${Date.now() - t0}ms`);
             return ffmpeg.stdout;
 
-        } catch(err) {
+        } catch (err) {
             console.error(`[YtDlpExtractor] stream() error after ${Date.now() - t0}ms:`, err.message);
             throw err;
         }
