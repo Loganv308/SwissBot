@@ -11,6 +11,7 @@ import { Pool } from 'pg';
 import config from './config.json' with { type: 'json' };
 import { ServerLogger } from './ServerLogger.js';
 import { YtDlpExtractor } from './YoutubeDownloader/YtDlpExtractor.js';
+import { startStreamMonitor } from "./streamMonitor.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const { databaseHost, databaseUser, databasePass, databaseName } = config;
@@ -93,6 +94,9 @@ class BotClient extends Client {
             await this.player.extractors.loadMulti(DefaultExtractors);
             await this.player.extractors.register(YtDlpExtractor, {});
             console.log('Registered extractors:', [...this.player.extractors.store.keys()]);
+
+            await startStreamMonitor(client);
+            console.log("StreamMonitor service ready!")
 
             setInterval(async () => {
                 try {
