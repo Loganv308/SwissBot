@@ -7,7 +7,7 @@
 import pg from "pg";
 const { Pool } = pg;
 
-import config from '../../config.json' with { type: 'json' };
+import config from './config.json' with { type: 'json' };
 
 // ─── Config ────────────────────────────────────────────────────────────────
 
