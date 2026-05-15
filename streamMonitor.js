@@ -11,12 +11,20 @@ import config from './config.json' with { type: 'json' };
 
 // ─── Config ────────────────────────────────────────────────────────────────
 
-const { databaseHost, chatDataUser, chatDataPass, chatDataName, streamerID, streamNotifierID, streamNotifierRoleID } = config
+const {
+  chatDataUser,
+  chatDataPass,
+  chatDataName,
+  databaseHost,
+  streamerID,
+  streamNotifierChannelID,
+  streamNotifierRoleID,
+} = config;
 
-const STREAMER_NAME       = streamer;                   // Must match channels.name in DB
-const DISCORD_CHANNEL_ID  = streamNotifierChannelID;    // Channel to post go-live messages
-const WATCHERS_ID   = streamNotifierRoleID;       // Role to ping
-const POLL_INTERVAL_MS    = 60_000;                     // Check every 60 seconds
+const STREAMER_NAME      = streamerID;
+const DISCORD_CHANNEL_ID = streamNotifierChannelID;
+const WATCHERS_ID        = streamNotifierRoleID;
+const POLL_INTERVAL_MS   = 60_000;
 
 const db = new Pool({
   host:     databaseHost,
@@ -28,7 +36,7 @@ const db = new Pool({
 
 // ─── State ─────────────────────────────────────────────────────────────────
 
-let wasLive = false;  // Tracks previous live state to avoid duplicate pings
+let wasLive = false;
 
 // ─── Monitor ───────────────────────────────────────────────────────────────
 
@@ -57,7 +65,7 @@ async function checkStream(client) {
       const unixTs    = Math.floor(startedAt.getTime() / 1000);
 
       const embed = {
-        color: 0x9146FF,  // Twitch purple
+        color: 0x9146FF,
         author: {
           name: "🔴 Now Live on Twitch",
         },
@@ -97,7 +105,7 @@ async function checkStream(client) {
       wasLive = false;
       console.log(`[StreamMonitor] 📴 ${STREAMER_NAME} went offline.`);
 
-      // Optional: send an offline message — uncomment if you want this
+      // Optional: uncomment to send an offline message to Discord
       // const channel = await client.channels.fetch(DISCORD_CHANNEL_ID);
       // if (channel) await channel.send(`📴 **${STREAMER_NAME}** has gone offline. See you next time!`);
     }
@@ -112,7 +120,6 @@ async function checkStream(client) {
 export async function startStreamMonitor(client) {
   console.log(`[StreamMonitor] Started — watching ${STREAMER_NAME} every ${POLL_INTERVAL_MS / 1000}s`);
 
-  // Run once immediately, then on interval
   await checkStream(client);
   setInterval(() => checkStream(client), POLL_INTERVAL_MS);
 }
